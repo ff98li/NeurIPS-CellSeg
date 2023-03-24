@@ -52,10 +52,28 @@ def main():
     parser = argparse.ArgumentParser("Baseline for Microscopy image segmentation")
     # Dataset parameters
     parser.add_argument(
-        "--data_path",
+        "--train_img_path",
         default="./data/Train_Pre_3class/",
         type=str,
-        help="training data path; subfolders: images, labels",
+        help="training images path",
+    )
+    parser.add_argument(
+        "--train_mask_path",
+        default="./data/Train_Pre_3class/",
+        type=str,
+        help="training masks path. masks are assumed to have the same name as the images",
+    )
+    parser.add_argument(
+        "--test_img_path",
+        default="./data/Train_Pre_3class/",
+        type=str,
+        help="test images path",
+    )
+    parser.add_argument(
+        "--test_mask_path",
+        default="./data/Train_Pre_3class/",
+        type=str,
+        help="test masks path. masks are assumed to have the same name as the images",
     )
     parser.add_argument(
         "--work_dir", default="./baseline/work_dir", help="path where to save models and logs"
@@ -66,11 +84,17 @@ def main():
 
     # Model parameters
     parser.add_argument(
-        "--model_name", default="unet", help="select mode: unet, unetr, swinunetr"
+        "--model_name", default="swinunetr", help="select mode: unet, unetr, swinunetr"
     )
     parser.add_argument("--num_class", default=3, type=int, help="segmentation classes")
+    #parser.add_argument(
+    #    "--input_size", default=256, type=int, help="segmentation classes"
+    #)
     parser.add_argument(
-        "--input_size", default=256, type=int, help="segmentation classes"
+        "-H", default=360, type=int, help="Height of the input image"
+    )
+    parser.add_argument(
+        "-W", default=640, type=int, help="Width of the input image"
     )
     # Training parameters
     parser.add_argument("--batch_size", default=8, type=int, help="Batch size per GPU")
@@ -91,36 +115,64 @@ def main():
     shutil.copyfile(
         __file__, join(model_path, run_id + "_" + os.path.basename(__file__))
     )
-    img_path = join(args.data_path, "images")
-    gt_path = join(args.data_path, "labels")
+    #img_path = join(args.data_path, "images")
+    #gt_path = join(args.data_path, "labels")
+    train_img_path = args.train_img_path
+    train_gt_path = args.train_mask_path
+    test_img_path = args.test_img_path
+    test_gt_path = args.test_mask_path
 
-    img_names = sorted(os.listdir(img_path))
-    gt_names = [img_name.split(".")[0] + "_label.png" for img_name in img_names]
-    img_num = len(img_names)
-    val_frac = 0.1
-    indices = np.arange(img_num)
-    np.random.shuffle(indices)
-    val_split = int(img_num * val_frac)
-    train_indices = indices[val_split:]
-    val_indices = indices[:val_split]
+    train_img_names = sorted(os.listdir(train_img_path))
+    train_gt_names = sorted(os.listdir(train_gt_path))
+    test_img_names = sorted(os.listdir(test_img_path))
+    test_gt_names = sorted(os.listdir(test_gt_path))
+    train_img_num = len(train_img_names)
+    test_img_num = len(test_img_names)
+    #img_names = sorted(os.listdir(img_path))
+    #gt_names = [img_name.split(".")[0] + "_label.png" for img_name in img_names]
+    #img_num = len(img_names)
+    #val_frac = 0.1
+    #indices = np.arange(img_num)
+    #np.random.shuffle(indices)
+    #val_split = int(img_num * val_frac)
+    #train_indices = indices[val_split:]
+    #val_indices = indices[:val_split]
 
     train_files = [
-        {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
-        for i in train_indices
+        {"img": join(train_img_path, train_img_names[i]), "label": join(train_gt_path, train_gt_names[i])}
+        for i in range(train_img_num)
     ]
     val_files = [
-        {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
-        for i in val_indices
+        {"img": join(test_img_path, test_img_names[i]), "label": join(test_gt_path, test_gt_names[i])}
+        for i in range(test_img_num)
     ]
+
+    #train_files = [
+    #    {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
+    #    for i in train_indices
+    #]
+    #val_files = [
+    #    {"img": join(img_path, img_names[i]), "label": join(gt_path, gt_names[i])}
+    #    for i in val_indices
+    #]
     print(
         f"training image num: {len(train_files)}, validation image num: {len(val_files)}"
     )
     #%% define transforms for image and segmentation
+    ## Calculate crop size and padded size for Swin-Unet
+    swinunetr_patch_size = np.power(2, np.arange(1, 6, dtype=int), dtype=int)
+    patch_lcm = np.lcm.reduce(swinunetr_patch_size)
+    #roi_size_H = (args.H // patch_lcm) * patch_lcm
+    #roi_size_W = (args.W // patch_lcm) * patch_lcm
+    roi_size = (min(args.W, args.H) // patch_lcm) * patch_lcm
+    ## NOTE: In Swin-Unet, the input image size should be divisible by swinunetr_patch_size as above
     train_transforms = Compose(
         [
             LoadImaged(
                 keys=["img", "label"], reader=PILReader, dtype=np.uint8
             ),  # image three channels (H, W, 3); label: (H, W)
+            ## TODO: Replace all AddChannel with EnsureChannelFirst
+            ## As these depreacated methods will cause error in MONAI>0.9 (latest 1.1)
             AddChanneld(keys=["label"], allow_missing_keys=True),  # label: (1, H, W)
             AsChannelFirstd(
                 keys=["img"], channel_dim=-1, allow_missing_keys=True
@@ -128,12 +180,22 @@ def main():
             ScaleIntensityd(
                 keys=["img"], allow_missing_keys=True
             ),  # Do not scale label
-            SpatialPadd(keys=["img", "label"], spatial_size=args.input_size),
+            SpatialPadd(
+                keys=["img", "label"],
+                #spatial_size=args.input_size
+                spatial_size=max(args.H, args.W)
+            ),
+            #RandSpatialCropd(
+            #    keys=["img", "label"], roi_size=args.input_size, random_size=False
+            #),
             RandSpatialCropd(
-                keys=["img", "label"], roi_size=args.input_size, random_size=False
+                keys=["img", "label"],
+                roi_size=roi_size,
+                random_size=False
             ),
             RandAxisFlipd(keys=["img", "label"], prob=0.5),
             RandRotate90d(keys=["img", "label"], prob=0.5, spatial_axes=[0, 1]),
+            #if roi_size_H == roi_size_W else RandRotated(keys=["img", "label"], prob = 0.5),
             # # intensity transform
             RandGaussianNoised(keys=["img"], prob=0.25, mean=0, std=0.1),
             RandAdjustContrastd(keys=["img"], prob=0.25, gamma=(1, 2)),
@@ -211,7 +273,7 @@ def main():
         model = UNETR2D(
             in_channels=3,
             out_channels=args.num_class,
-            img_size=(args.input_size, args.input_size),
+            img_size=(args.H, args.W),
             feature_size=16,
             hidden_size=768,
             mlp_dim=3072,
@@ -224,7 +286,7 @@ def main():
 
     if args.model_name.lower() == "swinunetr":
         model = monai.networks.nets.SwinUNETR(
-            img_size=(args.input_size, args.input_size),
+            img_size=roi_size, # should be divisible by stage-wise patch size
             in_channels=3,
             out_channels=args.num_class,
             feature_size=24,  # should be divisible by 12
@@ -286,7 +348,7 @@ def main():
                     val_labels_onehot = monai.networks.one_hot(
                         val_labels, args.num_class
                     )
-                    roi_size = (256, 256)
+                    #roi_size = (roi_size_H, roi_size_W)
                     sw_batch_size = 4
                     val_outputs = sliding_window_inference(
                         val_images, roi_size, sw_batch_size, model
