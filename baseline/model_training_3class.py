@@ -190,7 +190,7 @@ def main():
             #),
             RandSpatialCropd(
                 keys=["img", "label"],
-                roi_size=roi_size,
+                roi_size=roi_size if args.model_name == "swinunetr" else min(args.W, args.H),
                 random_size=False
             ),
             RandAxisFlipd(keys=["img", "label"], prob=0.5),

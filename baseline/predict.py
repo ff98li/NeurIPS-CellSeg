@@ -31,13 +31,20 @@ def main():
     # Model parameters
     parser.add_argument('--model_name', default='swinunetr', help='select mode: unet, unetr, swinunetr')
     parser.add_argument('--num_class', default=3, type=int, help='segmentation classes')
-    parser.add_argument('--input_size', default=256, type=int, help='segmentation classes')
+    parser.add_argument('-H', default=390, type=int, help='Input image height')
+    parser.add_argument('-W', default=640, type=int, help='Input image width')
     args = parser.parse_args()
 
     input_path = args.input_path
     output_path = args.output_path
     os.makedirs(output_path, exist_ok=True)
     img_names = sorted(os.listdir(join(input_path)))
+    if args.model_name == 'swinunetr':
+        swinunetr_patch_size = np.power(2, np.arange(1, 6, dtype=int), dtype=int)
+        patch_lcm = np.lcm.reduce(swinunetr_patch_size)
+        roi_size = (min(args.W, args.H) // patch_lcm) * patch_lcm
+    else:
+        roi_size = (args.input_size, args.input_size)
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,7 +63,7 @@ def main():
         model = UNETR2D(
             in_channels=3,
             out_channels=args.num_class,
-            img_size=(args.input_size, args.input_size),
+            img_size=(args.H, args.W),
             feature_size=16,
             hidden_size=768,
             mlp_dim=3072,
@@ -70,7 +77,7 @@ def main():
 
     if args.model_name.lower() == 'swinunetr':
         model = monai.networks.nets.SwinUNETR(
-            img_size=(args.input_size, args.input_size), 
+            img_size=roi_size, 
             in_channels=3, 
             out_channels=args.num_class,
             feature_size=24, # should be divisible by 12
@@ -80,7 +87,6 @@ def main():
     checkpoint = torch.load(join(args.model_path, 'best_Dice_model.pth'), map_location=torch.device(device))
     model.load_state_dict(checkpoint['model_state_dict'])
     #%%
-    roi_size = (args.input_size, args.input_size)
     sw_batch_size = 4
     model.eval()
     with torch.no_grad():
